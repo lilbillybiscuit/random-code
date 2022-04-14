@@ -435,7 +435,7 @@ verb 3" > /etc/openvpn/server/client-common.txt
 	echo "Finished!"
 	echo
 	echo "The client configuration is available in:" ~/"$client.ovpn"
-	echo "One-time download at http://$(grep 'remote ' client-common.txt | awk '{print $2}'):27000/$client"
+	echo "One-time download at http://$(grep 'remote ' /etc/openvpn/server/client-common.txt | awk '{print $2}'):27000/$client"
 	echo "New clients can be added by running this script again."
 else
 	clear
@@ -468,7 +468,7 @@ else
 			new_client
 			echo
 			echo "$client added. Configuration available in:" ~/"$client.ovpn"
-			echo "One-time download at http://$(grep 'remote ' client-common.txt | awk '{print $2}'):27000/$client"
+			echo "One-time download at http://$(grep 'remote ' /etc/openvpn/server/client-common.txt | awk '{print $2}'):27000/$client"
 			exit
 		;;
 		2)
