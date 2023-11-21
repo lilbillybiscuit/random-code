@@ -10,6 +10,14 @@ import (
     "strings"
 )
 
+// Global flags for file extensions and excluded directories
+var (
+    includeExts    string
+    excludeDirs    string
+    allowedExts    map[string]bool
+    excludedDirs   map[string]bool
+)
+
 // isBinary checks if the content appears to be binary
 func isBinary(content []byte) bool {
     // Check for null bytes and other common binary patterns
@@ -85,7 +93,33 @@ func processPath(path string) error {
     }
 }
 
+func shouldProcessFile(path string) bool {
+    // Check if file extension is in allowed list
+    if len(allowedExts) > 0 {
+        ext := strings.ToLower(filepath.Ext(path))
+        if !allowedExts[ext] {
+            return false
+        }
+    }
+
+    // Check if file is in excluded directory
+    if len(excludedDirs) > 0 {
+        dir := filepath.Dir(path)
+        for excludeDir := range excludedDirs {
+            if strings.Contains(dir, excludeDir) {
+                return false
+            }
+        }
+    }
+
+    return true
+}
+
 func processFile(path string) error {
+    if !shouldProcessFile(path) {
+        return nil
+    }
+
     contents, err := ioutil.ReadFile(path)
     if err != nil {
         return fmt.Errorf("could not read file %s: %v", path, err)
@@ -129,16 +163,45 @@ func printFilesRecursively(directory string) error {
     })
 }
 
+// parseCommaSeparatedList converts a comma-separated string into a map
+func parseCommaSeparatedList(input string) map[string]bool {
+    result := make(map[string]bool)
+    if input == "" {
+        return result
+    }
+    
+    items := strings.Split(input, ",")
+    for _, item := range items {
+        item = strings.TrimSpace(item)
+        if item != "" {
+            // For extensions, ensure they start with a dot
+            if !strings.HasPrefix(item, ".") && strings.Contains(includeExts, item) {
+                item = "." + item
+            }
+            result[item] = true
+        }
+    }
+    return result
+}
+
 func main() {
     // Set up command-line argument parsing
+    flag.StringVar(&includeExts, "ext", "", "Comma-separated list of file extensions to include (e.g., 'go,py,js')")
+    flag.StringVar(&excludeDirs, "exclude-dir", "", "Comma-separated list of directories to exclude")
+    
     flag.Usage = func() {
-        fmt.Fprintf(os.Stderr, "Usage: %s [paths...]\n", os.Args[0])
+        fmt.Fprintf(os.Stderr, "Usage: %s [options] [paths...]\n", os.Args[0])
         fmt.Fprintf(os.Stderr, "Recursively print files and their contents from specified paths.\n")
-        fmt.Fprintf(os.Stderr, "Paths can be files or directories.\n")
+        fmt.Fprintf(os.Stderr, "Paths can be files or directories.\n\n")
+        fmt.Fprintf(os.Stderr, "Options:\n")
         flag.PrintDefaults()
     }
 
     flag.Parse()
+
+    // Parse extensions and excluded directories
+    allowedExts = parseCommaSeparatedList(includeExts)
+    excludedDirs = parseCommaSeparatedList(excludeDirs)
 
     // Check if at least one path is provided
     if flag.NArg() < 1 {
