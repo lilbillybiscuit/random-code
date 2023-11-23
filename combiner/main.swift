@@ -31,7 +31,30 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
     var textView: NSTextView!
     var rootItem: FileItem!
 
-    let allowedExtensions = ["swift", "py", "js", "java", "cpp", "h", "c", "rb", "go", "kt"]
+    // Default extensions if none specified
+    let defaultExtensions = ["swift", "py", "js", "java", "cpp", "h", "c", "rb", "go", "kt"]
+    // Extensions specified via command line
+    var allowedExtensions: [String]
+
+    override init() {
+       // Parse command line arguments for extensions
+       let args = CommandLine.arguments
+       var cmdExtensions: [String] = []
+
+       for (_, arg) in args.enumerated() {
+           if arg.hasPrefix("--ext=") {
+               let ext = arg.replacingOccurrences(of: "--ext=", with: "")
+               cmdExtensions.append(ext.lowercased())
+           }
+       }
+
+       // Use command line extensions if specified, otherwise use defaults
+       allowedExtensions = cmdExtensions.isEmpty ? defaultExtensions : cmdExtensions
+
+       super.init()
+       setupWindow()
+       loadCurrentDirectory()
+    }
 
     func toggleSelectedItem() {
         let selectedRow = outlineView.selectedRow
@@ -71,7 +94,26 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
         let path: String
         let isDirectory: Bool
         var children: [FileItem]?
-        var isSelected: Bool = false
+        var isSelected: Bool = false {
+            didSet {
+                if isDirectory {
+                    children?.forEach { $0.isSelected = isSelected }
+                }
+            }
+        }
+
+        var selectionState: NSControl.StateValue {
+            if isDirectory {
+                let selectedChildren = children?.filter { $0.isSelected } ?? []
+                let totalChildren = children?.count ?? 0
+
+                if totalChildren == 0 { return .off }
+                if selectedChildren.count == totalChildren { return .on }
+                if selectedChildren.count > 0 { return .mixed }
+                return .off
+            }
+            return isSelected ? .on : .off
+        }
 
         init(path: String, processor: FileProcessor) {
             self.path = path
@@ -80,8 +122,13 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
             self.isDirectory = isDir.boolValue
             super.init()
 
-            // Auto-select if it's an allowed file
+            // Skip hidden files/folders
+            if (path as NSString).lastPathComponent.hasPrefix(".") {
+                return
+            }
+
             if !isDirectory {
+                // Auto-select if it's an allowed file
                 self.isSelected = processor.shouldAutoSelectFile(path)
             }
 
@@ -95,7 +142,19 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
 
             do {
                 let contents = try FileManager.default.contentsOfDirectory(atPath: path)
-                children = contents.map { FileItem(path: (path as NSString).appendingPathComponent($0), processor: processor) }
+                children = contents
+                    .filter { !$0.hasPrefix(".") } // Skip hidden files
+                    .compactMap { childPath -> FileItem? in
+                        let fullPath = (path as NSString).appendingPathComponent(childPath)  // Use childPath instead of $0
+                        let item = FileItem(path: fullPath, processor: processor)
+
+                        // Skip binary files
+                        if !item.isDirectory && !processor.isTextFile(fullPath) {
+                            return nil
+                        }
+
+                        return item
+                    }
                 children?.sort { $0.path < $1.path }
             } catch {
                 print("Error loading directory contents: \(error)")
@@ -104,12 +163,6 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
         }
     }
 
-
-    override init() {
-        super.init()
-        setupWindow()
-        loadCurrentDirectory()
-    }
     func setupWindow() {
         // Reduce window dimensions
         let rect = NSRect(x: 0, y: 0, width: 480, height: 320)  // Smaller default size
@@ -292,6 +345,7 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
 
             let checkbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(checkboxClicked(_:)))
             checkbox.translatesAutoresizingMaskIntoConstraints = false
+            checkbox.allowsMixedState = true  // Enable mixed state for folders
 
             let label = NSTextField(labelWithString: "")
             label.translatesAutoresizingMaskIntoConstraints = false
@@ -313,7 +367,7 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
         }
 
         if let checkbox = cell?.subviews.first as? NSButton {
-            checkbox.state = fileItem.isSelected ? .on : .off
+            checkbox.state = fileItem.selectionState
         }
 
         if let label = cell?.subviews.last as? NSTextField {
@@ -324,14 +378,19 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
     }
 
     @objc func checkboxClicked(_ sender: NSButton) {
-     guard let cell = sender.superview as? NSTableCellView else { return }
-     let row = outlineView.row(for: cell)
-     guard row >= 0,  // Check if row is valid
-           let item = outlineView.item(atRow: row) as? FileItem else { return }
+        guard let cell = sender.superview as? NSTableCellView else { return }
+        let row = outlineView.row(for: cell)
+        guard row >= 0,
+              let item = outlineView.item(atRow: row) as? FileItem else { return }
 
-     item.isSelected = sender.state == .on
-     updateTextView()
+        // Simply toggle the selection state
+        item.isSelected = !item.isSelected
+
+        outlineView.reloadData()
+        updateTextView()
     }
+
+
 
     func updateTextView() {
         var output = ""
@@ -375,6 +434,35 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
         return "//"
     }
 
+    func isTextFile(_ path: String) -> Bool {
+        let textExtensions = Set(allowedExtensions + ["txt", "md", "json", "xml", "yaml", "yml", "conf", "ini"])
+        let ext = (path as NSString).pathExtension.lowercased()
+
+        // If it has a known text extension, consider it text
+        if textExtensions.contains(ext) {
+            return true
+        }
+
+        // For files without extension or unknown extensions, check content
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .alwaysMapped) else {
+            return false
+        }
+
+        // Check first 8KB of the file
+        let size = min(8192, data.count)
+        var bytes = [UInt8](repeating: 0, count: size)
+        data.copyBytes(to: &bytes, count: size)
+
+        // Check for null bytes (common in binary files)
+        for byte in bytes {
+            if byte == 0 {
+                return false
+            }
+        }
+
+        return true
+    }
+
 }
 
 
@@ -388,6 +476,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var processor: FileProcessor!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Show usage if --help is specified
+        if CommandLine.arguments.contains("--help") {
+            print("Usage: \(CommandLine.arguments[0]) [--ext=extension] ...")
+            print("Examples:")
+            print("  \(CommandLine.arguments[0]) --ext=py              # Select Python files")
+            print("  \(CommandLine.arguments[0]) --ext=py --ext=swift  # Select Python and Swift files")
+            NSApplication.shared.terminate(nil)
+            return
+        }
+
         processor = FileProcessor()
 
         DispatchQueue.main.async { [weak self] in
@@ -396,7 +494,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.processor.window.makeKeyAndOrderFront(nil)
             self.processor.window.orderFrontRegardless()
 
-            // Make sure the window's key monitor becomes first responder
             if let keyMonitor = self.processor.window.contentView as? KeyMonitorView {
                 self.processor.window.makeFirstResponder(keyMonitor)
             }
