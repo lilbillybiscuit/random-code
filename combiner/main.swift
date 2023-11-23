@@ -345,24 +345,29 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
 
             let checkbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(checkboxClicked(_:)))
             checkbox.translatesAutoresizingMaskIntoConstraints = false
-            checkbox.allowsMixedState = true  // Enable mixed state for folders
+            checkbox.allowsMixedState = true
 
             let label = NSTextField(labelWithString: "")
             label.translatesAutoresizingMaskIntoConstraints = false
             label.isEditable = false
             label.isBordered = false
             label.drawsBackground = false
+            label.alignment = .left  // Ensure left alignment
+            label.lineBreakMode = .byTruncatingTail
 
             cell?.addSubview(checkbox)
             cell?.addSubview(label)
 
             NSLayoutConstraint.activate([
-                checkbox.leadingAnchor.constraint(equalTo: cell!.leadingAnchor),
+                // Position checkbox with minimal left padding
+                checkbox.leadingAnchor.constraint(equalTo: cell!.leadingAnchor, constant: 2),
                 checkbox.centerYAnchor.constraint(equalTo: cell!.centerYAnchor),
+                checkbox.widthAnchor.constraint(equalToConstant: 20),  // Fixed width for checkbox
 
-                label.leadingAnchor.constraint(equalTo: checkbox.trailingAnchor, constant: 4),
+                // Position label immediately after checkbox with minimal spacing
+                label.leadingAnchor.constraint(equalTo: checkbox.trailingAnchor, constant: 2),
                 label.centerYAnchor.constraint(equalTo: cell!.centerYAnchor),
-                label.trailingAnchor.constraint(equalTo: cell!.trailingAnchor)
+                label.trailingAnchor.constraint(equalTo: cell!.trailingAnchor, constant: -2)
             ])
         }
 
