@@ -1,225 +1,268 @@
 package main
 
 import (
-    "bytes"
-    "flag"
-    "fmt"
-    "io/ioutil"
-    "os"
-    "path/filepath"
-    "strings"
+	"bytes"
+	"fmt"
+	"io/ioutil"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/widget"
 )
 
-// Global flags for file extensions and excluded directories
-var (
-    includeExts    string
-    excludeDirs    string
-    allowedExts    map[string]bool
-    excludedDirs   map[string]bool
-)
+type FileNode struct {
+	path     string
+	isDir    bool
+	selected bool
+	children []*FileNode
+}
 
-// isBinary checks if the content appears to be binary
+type FileProcessor struct {
+	window    fyne.Window
+	tree      *widget.Tree
+	nodes     map[string]*FileNode
+	rootNode  *FileNode
+	outputBox *widget.Entry
+}
+
+func NewFileProcessor() *FileProcessor {
+	myApp := app.New()
+	myWindow := myApp.NewWindow("File Processor")
+
+	fp := &FileProcessor{
+		window: myWindow,
+		nodes:  make(map[string]*FileNode),
+	}
+
+	fp.setupUI()
+
+	// Get current directory and load it immediately
+	currentDir, err := os.Getwd()
+	if err != nil {
+		dialog.ShowError(err, fp.window)
+		return fp
+	}
+	fp.loadDirectory(currentDir)
+
+	return fp
+}
+
+func (fp *FileProcessor) setupUI() {
+	// Create confirm button
+	confirmButton := widget.NewButton("Confirm", func() {
+		content := fp.outputBox.Text
+		fp.window.Clipboard().SetContent(content)
+		fp.window.Close()
+	})
+
+	// Create main layout containers
+	mainContainer := container.NewVBox(
+		container.NewHSplit(
+			container.NewVScroll(fp.createTree()),
+			container.NewVScroll(fp.createOutput()),
+		),
+		container.NewHBox(
+			widget.NewLabel(""), // Spacer
+			confirmButton,
+		),
+	)
+
+	// Set window content and size
+	fp.window.SetContent(mainContainer)
+	fp.window.Resize(fyne.NewSize(800, 600))
+}
+
+func (fp *FileProcessor) createTree() fyne.CanvasObject {
+	fp.tree = &widget.Tree{
+		ChildUIDs: func(uid string) []string {
+			node := fp.nodes[uid]
+			if node == nil {
+				return []string{}
+			}
+			childUIDs := make([]string, len(node.children))
+			for i, child := range node.children {
+				childUIDs[i] = child.path
+			}
+			return childUIDs
+		},
+		IsBranch: func(uid string) bool {
+			node := fp.nodes[uid]
+			return node != nil && node.isDir
+		},
+		CreateNode: func(branch bool) fyne.CanvasObject {
+			return container.NewHBox(
+				widget.NewCheck("", nil),
+				widget.NewLabel(""),
+			)
+		},
+		UpdateNode: func(uid string, branch bool, obj fyne.CanvasObject) {
+			node := fp.nodes[uid]
+			if node == nil {
+				return
+			}
+
+			container := obj.(*fyne.Container)
+			check := container.Objects[0].(*widget.Check)
+			label := container.Objects[1].(*widget.Label)
+
+			check.Checked = node.selected
+			check.OnChanged = func(checked bool) {
+				node.selected = checked
+				fp.updateSelection(node, checked)
+				fp.processSelectedFiles()
+			}
+
+			label.SetText(filepath.Base(node.path))
+		},
+	}
+
+	return fp.tree
+}
+
+func (fp *FileProcessor) createOutput() fyne.CanvasObject {
+	fp.outputBox = widget.NewMultiLineEntry()
+	fp.outputBox.Disable()
+	return fp.outputBox
+}
+
+func (fp *FileProcessor) loadDirectory(path string) {
+	fp.nodes = make(map[string]*FileNode)
+	fp.rootNode = &FileNode{
+		path:  path,
+		isDir: true,
+	}
+	fp.nodes[path] = fp.rootNode
+
+	err := filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		node := &FileNode{
+			path:  path,
+			isDir: info.IsDir(),
+		}
+		fp.nodes[path] = node
+
+		// Add to parent's children
+		parent := fp.nodes[filepath.Dir(path)]
+		if parent != nil {
+			parent.children = append(parent.children, node)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		dialog.ShowError(err, fp.window)
+		return
+	}
+
+	fp.tree.Root = path
+	fp.tree.Refresh()
+}
+
+func (fp *FileProcessor) updateSelection(node *FileNode, checked bool) {
+	if node.isDir {
+		for _, child := range node.children {
+			child.selected = checked
+			fp.updateSelection(child, checked)
+		}
+	}
+	fp.tree.Refresh()
+}
+
+func (fp *FileProcessor) processSelectedFiles() {
+	var output strings.Builder
+
+	var processNode func(*FileNode)
+	processNode = func(node *FileNode) {
+		if node.selected && !node.isDir {
+			content, err := ioutil.ReadFile(node.path)
+			if err != nil {
+				output.WriteString(fmt.Sprintf("Error reading %s: %v\n", node.path, err))
+				return
+			}
+
+			if !isBinary(content) {
+				commentStyle := getCommentStyle(node.path)
+				output.WriteString(fmt.Sprintf("%s %s\n", commentStyle, node.path))
+				output.WriteString(string(content))
+				output.WriteString("\n\n")
+			}
+		}
+
+		for _, child := range node.children {
+			processNode(child)
+		}
+	}
+
+	processNode(fp.rootNode)
+	fp.outputBox.SetText(output.String())
+}
+
 func isBinary(content []byte) bool {
-    // Check for null bytes and other common binary patterns
-    if bytes.IndexByte(content, 0) != -1 {
-        return true
-    }
+	if bytes.IndexByte(content, 0) != -1 {
+		return true
+	}
 
-    // Check first 512 bytes for binary content
-    size := len(content)
-    if size > 512 {
-        size = 512
-    }
+	size := len(content)
+	if size > 512 {
+		size = 512
+	}
 
-    for i := 0; i < size; i++ {
-        if content[i] < 32 && content[i] != '\n' && content[i] != '\r' && content[i] != '\t' {
-            return true
-        }
-    }
-    return false
+	for i := 0; i < size; i++ {
+		if content[i] < 32 && content[i] != '\n' && content[i] != '\r' && content[i] != '\t' {
+			return true
+		}
+	}
+	return false
 }
 
-// getCommentStyle returns the appropriate comment style based on file extension
 func getCommentStyle(filename string) string {
-    ext := strings.ToLower(filepath.Ext(filename))
-    
-    // Files that use // comments
-    slashCommentExts := map[string]bool{
-        ".go":   true,
-        ".java": true,
-        ".js":   true,
-        ".cpp":  true,
-        ".c":    true,
-        ".h":    true,
-        ".cs":   true,
-        ".kt":   true,
-        ".swift":true,
-    }
+	ext := strings.ToLower(filepath.Ext(filename))
 
-    // Files that use # comments
-    hashCommentExts := map[string]bool{
-        ".py":     true,
-        ".rb":     true,
-        ".pl":     true,
-        ".sh":     true,
-        ".bash":   true,
-        ".yml":    true,
-        ".yaml":   true,
-        ".conf":   true,
-        ".txt":    true,
-        ".md":     true,
-        "":        true, // Files with no extension
-    }
+	slashCommentExts := map[string]bool{
+		".go":    true,
+		".java":  true,
+		".js":    true,
+		".cpp":   true,
+		".c":     true,
+		".h":     true,
+		".cs":    true,
+		".kt":    true,
+		".swift": true,
+	}
 
-    if slashCommentExts[ext] {
-        return "//"
-    }
-    if hashCommentExts[ext] {
-        return "#"
-    }
-    return "//" // Default to // for unknown extensions
-}
+	hashCommentExts := map[string]bool{
+		".py":   true,
+		".rb":   true,
+		".pl":   true,
+		".sh":   true,
+		".bash": true,
+		".yml":  true,
+		".yaml": true,
+		".conf": true,
+		".txt":  true,
+		".md":   true,
+		"":      true,
+	}
 
-func processPath(path string) error {
-    fileInfo, err := os.Stat(path)
-    if err != nil {
-        return fmt.Errorf("error accessing path %s: %v", path, err)
-    }
-
-    if fileInfo.IsDir() {
-        return printFilesRecursively(path)
-    } else {
-        return processFile(path)
-    }
-}
-
-func shouldProcessFile(path string) bool {
-    // Check if file extension is in allowed list
-    if len(allowedExts) > 0 {
-        ext := strings.ToLower(filepath.Ext(path))
-        if !allowedExts[ext] {
-            return false
-        }
-    }
-
-    // Check if file is in excluded directory
-    if len(excludedDirs) > 0 {
-        dir := filepath.Dir(path)
-        for excludeDir := range excludedDirs {
-            if strings.Contains(dir, excludeDir) {
-                return false
-            }
-        }
-    }
-
-    return true
-}
-
-func processFile(path string) error {
-    if !shouldProcessFile(path) {
-        return nil
-    }
-
-    contents, err := ioutil.ReadFile(path)
-    if err != nil {
-        return fmt.Errorf("could not read file %s: %v", path, err)
-    }
-
-    // Skip binary files
-    if isBinary(contents) {
-        fmt.Printf("Skipping binary file: %s\n", path)
-        return nil
-    }
-
-    // Get appropriate comment style
-    commentStyle := getCommentStyle(path)
-
-    // Print file path with appropriate comment style and contents
-    fmt.Printf("%s %s\n", commentStyle, path)
-    fmt.Println(string(contents))
-    fmt.Println() // Add a newline for separation between files
-
-    return nil
-}
-
-func printFilesRecursively(directory string) error {
-    return filepath.Walk(directory, func(path string, info os.FileInfo, err error) error {
-        if err != nil {
-            return fmt.Errorf("error accessing path %s: %v", path, err)
-        }
-
-        // Skip directories in the walk
-        if info.IsDir() {
-            return nil
-        }
-
-        // Skip very large files (optional, adjust size as needed)
-        if info.Size() > 10*1024*1024 { // 10MB limit
-            fmt.Printf("Skipping large file %s (size: %d bytes)\n", path, info.Size())
-            return nil
-        }
-
-        return processFile(path)
-    })
-}
-
-// parseCommaSeparatedList converts a comma-separated string into a map
-func parseCommaSeparatedList(input string) map[string]bool {
-    result := make(map[string]bool)
-    if input == "" {
-        return result
-    }
-    
-    items := strings.Split(input, ",")
-    for _, item := range items {
-        item = strings.TrimSpace(item)
-        if item != "" {
-            // For extensions, ensure they start with a dot
-            if !strings.HasPrefix(item, ".") && strings.Contains(includeExts, item) {
-                item = "." + item
-            }
-            result[item] = true
-        }
-    }
-    return result
+	if slashCommentExts[ext] {
+		return "//"
+	}
+	if hashCommentExts[ext] {
+		return "#"
+	}
+	return "//"
 }
 
 func main() {
-    // Set up command-line argument parsing
-    flag.StringVar(&includeExts, "ext", "", "Comma-separated list of file extensions to include (e.g., 'go,py,js')")
-    flag.StringVar(&excludeDirs, "exclude-dir", "", "Comma-separated list of directories to exclude")
-    
-    flag.Usage = func() {
-        fmt.Fprintf(os.Stderr, "Usage: %s [options] [paths...]\n", os.Args[0])
-        fmt.Fprintf(os.Stderr, "Recursively print files and their contents from specified paths.\n")
-        fmt.Fprintf(os.Stderr, "Paths can be files or directories.\n\n")
-        fmt.Fprintf(os.Stderr, "Options:\n")
-        flag.PrintDefaults()
-    }
-
-    flag.Parse()
-
-    // Parse extensions and excluded directories
-    allowedExts = parseCommaSeparatedList(includeExts)
-    excludedDirs = parseCommaSeparatedList(excludeDirs)
-
-    // Check if at least one path is provided
-    if flag.NArg() < 1 {
-        flag.Usage()
-        os.Exit(1)
-    }
-
-    // Process each provided path
-    hasError := false
-    for _, path := range flag.Args() {
-        err := processPath(path)
-        if err != nil {
-            fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-            hasError = true
-        }
-    }
-
-    if hasError {
-        os.Exit(1)
-    }
+	fp := NewFileProcessor()
+	fp.window.ShowAndRun()
 }
