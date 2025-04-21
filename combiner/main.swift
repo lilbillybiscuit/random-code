@@ -228,19 +228,20 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
     var inclusionPatterns: Set<String> // Added for potential future use or overriding excludes
 
     override init() {
+        // Initialize collections first
         var cmdExtensions: [String] = []
         var cmdExclusions: [String] = []
-        var cmdInclusions: [String] = [] // Files/dirs to force include even if matching default exclude
+        var cmdInclusions: [String] = []
 
         let args = CommandLine.arguments
-        for arg in args.dropFirst() { // Skip executable name
+        for arg in args.dropFirst() {
             if arg.hasPrefix("--ext=") {
                 let ext = String(arg.dropFirst("--ext=".count)).lowercased()
                 if !ext.isEmpty { cmdExtensions.append(ext) }
             } else if arg.hasPrefix("--exclude=") {
                 let pattern = String(arg.dropFirst("--exclude=".count))
                  if !pattern.isEmpty { cmdExclusions.append(pattern) }
-            } else if arg.hasPrefix("--include=") { // Handle includes
+            } else if arg.hasPrefix("--include=") {
                  let pattern = String(arg.dropFirst("--include=".count))
                  if !pattern.isEmpty { cmdInclusions.append(pattern) }
             }
@@ -254,8 +255,55 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
         inclusionPatterns = Set(cmdInclusions)
 
         super.init()
+        
+        // Set up the window BEFORE attempting to load data
         setupWindow()
+        
+        // IMPORTANT: Make sure we don't access data before it's loaded
+        outlineView.dataSource = nil
+        
+        // Load data AFTER UI is set up
         loadCurrentDirectory()
+    }
+    
+    func setupTextView() {
+        textView = NSTextView()
+        textView.isEditable = false
+        textView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.drawsBackground = true
+        textView.backgroundColor = NSColor.textBackgroundColor
+        textView.textColor = NSColor.labelColor
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = true
+        textView.textContainer?.widthTracksTextView = true
+        
+        // Add custom key handling for the text view
+        class EscapeHandlingTextView: NSTextView {
+            weak var processor: FileProcessor?
+            
+            override func keyDown(with event: NSEvent) {
+                if event.keyCode == 53 { // Escape key
+                    processor?.window.close()
+                    return
+                }
+                super.keyDown(with: event)
+            }
+        }
+        
+        // Replace with our custom text view
+        let customTextView = EscapeHandlingTextView(frame: .zero)
+        customTextView.isEditable = false
+        customTextView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        customTextView.drawsBackground = true
+        customTextView.backgroundColor = NSColor.textBackgroundColor
+        customTextView.textColor = NSColor.labelColor
+        customTextView.isVerticallyResizable = true
+        customTextView.isHorizontallyResizable = true
+        customTextView.textContainer?.widthTracksTextView = true
+        customTextView.processor = self
+        
+        // Use our custom text view instead
+        textView = customTextView
     }
 
     // Determine if a file/directory should be excluded
@@ -376,15 +424,22 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
         window.isMovableByWindowBackground = true
         window.backgroundColor = .clear
         
+        // Set window to appear on top of everything, including full-screen apps
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.mainMenuWindow)) + 1)
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        
+        // This ensures window appears even when app doesn't have focus
+        NSApp.setActivationPolicy(.accessory)
+        
         // Create key monitor view as content view
         let keyMonitorView = KeyMonitorView()
         keyMonitorView.processor = self
         window.contentView = keyMonitorView
         
-        // CRITICAL: Ensure the window delegates key events properly
+        // Assign the window as its own key delegate
         (window as? KeyForwardingWindow)?.keyDelegate = self
         
-        // Visual Effect View - for transparency
+        // Visual Effect View - critical for transparency
         let visualEffectView = NSVisualEffectView()
         visualEffectView.translatesAutoresizingMaskIntoConstraints = false
         visualEffectView.blendingMode = .behindWindow
@@ -424,7 +479,7 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
         
         outlineScrollView.documentView = outlineView
         
-        // Text View (Right Side)
+        // Text View (Right Side) - with escape key handling
         let textScrollView = NSScrollView()
         textScrollView.hasVerticalScroller = true
         textScrollView.hasHorizontalScroller = true
@@ -434,15 +489,33 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
         textScrollView.backgroundColor = NSColor.textBackgroundColor
         textScrollView.translatesAutoresizingMaskIntoConstraints = false
         
-        textView = NSTextView()
-        textView.isEditable = false
-        textView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        textView.drawsBackground = true
-        textView.backgroundColor = NSColor.textBackgroundColor
-        textView.textColor = NSColor.labelColor
-        textView.isVerticallyResizable = true
-        textView.isHorizontallyResizable = true
-        textView.textContainer?.widthTracksTextView = true
+        // Create custom text view with escape key handling
+        class EscapeHandlingTextView: NSTextView {
+            weak var processor: FileProcessor?
+            
+            override func keyDown(with event: NSEvent) {
+                if event.keyCode == 53 { // Escape key
+                    processor?.window.close()
+                    return
+                }
+                super.keyDown(with: event)
+            }
+        }
+        
+        // Create and configure the custom text view
+        let customTextView = EscapeHandlingTextView(frame: .zero)
+        customTextView.isEditable = false
+        customTextView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        customTextView.drawsBackground = true
+        customTextView.backgroundColor = NSColor.textBackgroundColor
+        customTextView.textColor = NSColor.labelColor
+        customTextView.isVerticallyResizable = true
+        customTextView.isHorizontallyResizable = true
+        customTextView.textContainer?.widthTracksTextView = true
+        customTextView.processor = self
+        
+        // Use our custom text view
+        textView = customTextView
         
         textScrollView.documentView = textView
         
@@ -478,7 +551,7 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
         // Add mainStackView to visualEffectView
         visualEffectView.addSubview(mainStackView)
         
-        // CONSTRAINTS - CRITICAL FIXES HERE
+        // CONSTRAINTS
         NSLayoutConstraint.activate([
             // Visual Effect View fills entire window
             visualEffectView.topAnchor.constraint(equalTo: keyMonitorView.topAnchor),
@@ -492,11 +565,11 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
             mainStackView.trailingAnchor.constraint(equalTo: visualEffectView.trailingAnchor, constant: -4),
             mainStackView.bottomAnchor.constraint(equalTo: visualEffectView.bottomAnchor, constant: -4),
             
-            // CRITICAL: Force split view to fill width of its container
+            // Force split view to fill width of its container
             splitView.leadingAnchor.constraint(equalTo: mainStackView.leadingAnchor),
             splitView.trailingAnchor.constraint(equalTo: mainStackView.trailingAnchor),
             
-            // CRITICAL: Force split view to expand in height
+            // Force split view to expand in height
             splitView.heightAnchor.constraint(equalTo: mainStackView.heightAnchor, constant: -30),
             
             // Minimum widths for scroll views
@@ -507,15 +580,15 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
             bottomControlsStack.heightAnchor.constraint(equalToConstant: 24)
         ])
         
-        // Set initial split view position (MUST be done AFTER constraints)
+        // Set initial split view position
         DispatchQueue.main.async {
-            // Default position at 1/3 of window width
-            let totalWidth = self.window.frame.width - 8  // Account for margins
+            let totalWidth = self.window.frame.width - 8
             let position = totalWidth / 3
             splitView.setPosition(position, ofDividerAt: 0)
         }
         
-        // Make window active and set first responder
+        // Ensure the window appears on top and is key/visible
+        window.orderFrontRegardless()
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(keyMonitorView)
         window.center()
@@ -528,84 +601,66 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
 
     func loadCurrentDirectory() {
         let currentPath = FileManager.default.currentDirectoryPath
-        var successfullyInitializedRoot = false
-
+        
         // --- Synchronous Initialization Attempt ---
-        // Use the failable initializer first
-        if let validRoot = FileItem(path: currentPath, processor: self) {
-            self.rootItem = validRoot // Assign directly to the instance variable
-            successfullyInitializedRoot = true
-        } else {
-            // Failable init failed (excluded or invalid path?)
-            print("Warning: Initial FileItem creation failed for '\(currentPath)'. Attempting fallback.")
-
-            // Check if path exists and is a directory for fallback
-            var isDirFallback: ObjCBool = false
-            let existsFallback = FileManager.default.fileExists(atPath: currentPath, isDirectory: &isDirFallback)
-
-            if existsFallback {
-                // Use the non-failable initializer for the fallback
-                // Assign directly to the instance variable
-                self.rootItem = FileItem(path: currentPath, isDirectory: isDirFallback.boolValue, processor: self)
-                // Manually load children for this fallback root if it's a directory
-                // Note: The non-failable init doesn't call loadChildren automatically
-                if self.rootItem.isDirectory {
-                    self.rootItem.loadChildren(processor: self)
-                }
-                successfullyInitializedRoot = true
-                print("Info: Fallback root created for '\(currentPath)'.")
+        // Attempt to create the root item with silent error handling
+        do {
+            // Create the root item
+            if let validRoot = FileItem(path: currentPath, processor: self) {
+                self.rootItem = validRoot
             } else {
-                // Path doesn't even exist - create a minimal dummy item
-                print("Error: Current directory path '\(currentPath)' does not exist. Creating dummy root.")
-                // Assign directly to the instance variable
-                self.rootItem = FileItem(path: currentPath, isDirectory: true, processor: self) // Assume directory for dummy
-                self.rootItem.children = [] // Ensure it has no children
-                successfullyInitializedRoot = true // We have *an* item, even if dummy
+                // Failable initializer failed - create a backup silently
+                var isDirFallback: ObjCBool = false
+                let existsFallback = FileManager.default.fileExists(atPath: currentPath, isDirectory: &isDirFallback)
+                
+                if existsFallback {
+                    self.rootItem = FileItem(path: currentPath, isDirectory: isDirFallback.boolValue, processor: self)
+                    if self.rootItem.isDirectory {
+                        self.rootItem.loadChildren(processor: self)
+                    }
+                } else {
+                    // Path doesn't exist - create dummy
+                    self.rootItem = FileItem(path: "Error", isDirectory: true, processor: self)
+                    self.rootItem.children = []
+                }
             }
+        } catch {
+            // Create emergency fallback silently
+            self.rootItem = FileItem(path: "Error", isDirectory: true, processor: self)
+            self.rootItem.children = []
         }
-
-        // --- Final Check ---
-        // This guard ensures we have *some* rootItem before proceeding to async UI updates.
-        guard successfullyInitializedRoot, self.rootItem != nil else {
-             // If we reach here, both initial and fallback creation failed catastrophically.
-             // Provide a non-nil dummy to prevent immediate crash in data source.
-             print("CRITICAL ERROR: Failed to initialize rootItem even with fallback. Creating final dummy.")
-             // Assign a final dummy to self.rootItem
-             self.rootItem = FileItem(path: "Error - Initialization Failed", isDirectory: true, processor: self)
-             self.rootItem.children = []
-             // Crucially, exit the function here as initialization failed.
-             // The async UI updates should not run.
-             return // <--- ADDED RETURN HERE
+        
+        // Final safety check
+        if self.rootItem == nil {
+            self.rootItem = FileItem(path: "Error", isDirectory: true, processor: self)
+            self.rootItem.children = []
         }
 
         // --- Asynchronous UI Updates ---
-        // Now that self.rootItem is guaranteed non-nil, schedule UI updates.
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-
-            // Defensive check inside async block (shouldn't be needed but safe)
-            guard self.rootItem != nil else {
-                print("Error: rootItem became nil before async UI update.")
-                return
-            }
-
+            
+            // NOW set the data source, AFTER we have a valid rootItem
+            self.outlineView.dataSource = self
+            
+            // Now it's safe to reload
             self.outlineView.reloadData()
-            self.outlineView.expandItem(self.rootItem) // Expand the root itself
+            self.outlineView.expandItem(self.rootItem)
 
             // Select first actual child item
             if self.outlineView.numberOfRows > 1 {
                 self.outlineView.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
                 self.outlineView.scrollRowToVisible(1)
-            } else if self.outlineView.numberOfRows > 0 { // Select root if it's the only item
+            } else if self.outlineView.numberOfRows > 0 {
                 self.outlineView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
                 self.outlineView.scrollRowToVisible(0)
             }
 
-            self.updateTextView() // Initial text view update
+            self.updateTextView()
 
             // Ensure key monitor has focus
             if let keyMonitor = self.window.contentView as? KeyMonitorView {
-                _ = keyMonitor.becomeFirstResponder()
+                _ = self.window.makeFirstResponder(keyMonitor)
             }
         }
     }
@@ -613,79 +668,72 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
     @objc func confirmClicked() {
         let outputString = textView.string
         let charCount = outputString.count
-
+        
+        // Copy to clipboard
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(outputString, forType: .string)
-
-        // Update status label
-        statusLabel.stringValue = "\(charCount) characters copied"
-
-        // Optionally close after a short delay or immediately
-         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-             NSApplication.shared.terminate(nil)
-         }
-        // Or terminate immediately:
-        // NSApplication.shared.terminate(nil)
+        
+        // Print character count message (only output of the program)
+        print("\(charCount) characters copied to clipboard")
+        
+        // Terminate immediately without delay
+        NSApplication.shared.terminate(nil)
     }
 
     // MARK: - NSOutlineViewDataSource
 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
-            // If item is nil, we are asking for the number of root items.
-            if item == nil {
-                // GUARD: Ensure rootItem exists before trying to return 1 for it.
-                guard self.rootItem != nil else {
-                    print("Error DataSource: numberOfChildrenOfItem(item: nil) called, but rootItem is nil. Returning 0.")
-                    return 0 // Return 0 to prevent crash
-                }
-                return 1 // We always have one root item conceptually
-            }
-
-            // Otherwise, return the number of children of the given FileItem.
-            guard let fileItem = item as? FileItem else {
-                print("Warning DataSource: numberOfChildrenOfItem called with unexpected item type: \(type(of: item))")
-                return 0
-            }
-            return fileItem.children?.count ?? 0
+        // Silently handle nil root item
+        guard rootItem != nil else {
+            return 0
+        }
+        
+        // If item is nil, we are asking for the number of root items.
+        if item == nil {
+            return 1 // We always have one root item conceptually
         }
 
-        func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
-             // If item is nil, return the root item.
-            if item == nil {
-                // GUARD: Ensure rootItem exists before returning it.
-                guard let root = rootItem else {
-                    // This is the point where the original crash likely happened.
-                    print("CRITICAL Error DataSource: child(ofItem: nil) called, but rootItem is nil. Returning dummy item.")
-                    // Return a temporary dummy item to prevent the crash.
-                    // This indicates a failure during initialization.
-                    // Create processor instance temporarily if self is not available? No, self should be available here.
-                    // Need a way to create a dummy FileItem even if processor isn't fully ready?
-                    // Let's assume self exists and create a dummy linked to it.
-                    let dummy = FileItem(path: "Error - Root Nil", isDirectory: true, processor: self)
-                    dummy.children = []
-                    return dummy
-                }
-                return root
-            }
+        // Otherwise, return the number of children of the given FileItem.
+        guard let fileItem = item as? FileItem else {
+            return 0
+        }
+        
+        return fileItem.children?.count ?? 0
+    }
 
-            // Otherwise, return the specific child of the given FileItem.
-            guard let fileItem = item as? FileItem,
-                  let children = fileItem.children,
-                  index < children.count else {
-                 // This case means the data source reported children, but they aren't accessible.
-                 print("Error DataSource: Invalid child index (\(index)) or item requested for item path: \((item as? FileItem)?.path ?? "Unknown"). Returning dummy item.")
-                 // Return a dummy item to prevent crash
-                 let dummy = FileItem(path: "Error - Invalid Child", isDirectory: false, processor: self)
-                 return dummy
-            }
-            return children[index]
+    func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+        // Silently handle nil root item
+        guard let root = rootItem else {
+            // Return a temporary dummy item to prevent the crash
+            let dummy = FileItem(path: "Error", isDirectory: true, processor: self)
+            dummy.children = []
+            return dummy
+        }
+        
+        // If item is nil, return the root item.
+        if item == nil {
+            return root
         }
 
-    
+        // Otherwise, return the specific child of the given FileItem.
+        guard let fileItem = item as? FileItem,
+              let children = fileItem.children,
+              index < children.count else {
+            // Return a dummy item to prevent crash
+            let dummy = FileItem(path: "Error", isDirectory: false, processor: self)
+            return dummy
+        }
+        
+        return children[index]
+    }
+
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
+        // Silently handle unexpected cases
+        guard rootItem != nil else { return false }
         guard let fileItem = item as? FileItem else { return false }
-        // Only directories with children are expandable visually.
+        
+        // Only directories with children are expandable visually
         return fileItem.isDirectory && (fileItem.children?.count ?? 0) > 0
     }
 
@@ -882,9 +930,9 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
                     output += "\n\(commentStyle) === End Content ===\n\n"
                     fileCount += 1
                 } catch {
-                    // Handle read errors gracefully
+                    // Handle read errors silently - no debug prints
                     let relativePath = item.path.replacingOccurrences(of: currentPath + "/", with: "")
-                    output += "# Error reading file: \(relativePath)\n# \(error.localizedDescription)\n\n"
+                    output += "# Error reading file: \(relativePath)\n"
                 }
             }
 
@@ -904,17 +952,15 @@ class FileProcessor: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, N
              rootItem.children?.sorted(by: { $0.path.localizedStandardCompare($1.path) == .orderedAscending }).forEach { processItem($0) }
         }
 
-
         // Update the text view on the main thread
         DispatchQueue.main.async { [weak self] in
              self?.textView.string = output
-             // Update status label immediately when text view updates
+             
+             // Update status label with character and file count (no debug prints)
              let charCount = output.count
              self?.statusLabel.stringValue = "\(charCount) characters in preview (\(fileCount) files)"
-
         }
     }
-
 
     func getCommentStyle(forPath path: String) -> String {
         let ext = (path as NSString).pathExtension.lowercased()
@@ -1047,27 +1093,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSApplication.shared.terminate(nil)
             return
         }
-
+        
+        // Configure the application as an accessory app for proper window behavior
+        NSApp.setActivationPolicy(.accessory)
+        
+        // Create the processor
         processor = FileProcessor()
 
         // Ensure UI setup happens on the main thread
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            NSApp.activate(ignoringOtherApps: true) // Bring app to front
-            self.processor.window.makeKeyAndOrderFront(nil)
-            self.processor.window.orderFrontRegardless() // Ensure it's visible
-
-            // Re-ensure first responder status after potential delays
-            if let keyMonitor = self.processor.window.contentView as? KeyMonitorView {
-                 _ = keyMonitor.becomeFirstResponder() // Use becomeFirstResponder()
-            } else {
-                 print("Error: Could not find KeyMonitorView")
+            
+            // Activate app and bring window to front
+            NSApp.activate(ignoringOtherApps: true)
+            
+            // Make sure window is ordered front regardless of other apps
+            self.processor.window.orderFrontRegardless()
+            
+            // Set focus to the key monitor view
+            if let keyMonitorView = self.processor.window.contentView as? KeyMonitorView {
+                self.processor.window.makeFirstResponder(keyMonitorView)
             }
         }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        return true // Quit the app when the main window is closed
+        return true
+    }
+    
+    // Handle application activation - ensure window stays visible
+    func applicationDidBecomeActive(_ notification: Notification) {
+        processor?.window.orderFrontRegardless()
+    }
+    
+    // Handle losing focus - keep window visible
+    func applicationDidResignActive(_ notification: Notification) {
+        // This ensures the window stays visible even when the app loses focus
+        processor?.window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.mainMenuWindow)) + 1)
+        processor?.window.orderFrontRegardless()
     }
 }
 
